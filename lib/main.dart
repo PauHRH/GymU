@@ -134,6 +134,7 @@ class _GymUAppState extends State<GymUApp> {
           userName: _userName,
           onThemeChange: setThemeMode,
           onProfileImageChange: setProfileImage,
+          themeMode: _themeMode,
         ),
       ),
     );
@@ -152,8 +153,8 @@ class AuthScreen extends StatefulWidget {
 class _AuthScreenState extends State<AuthScreen> {
   bool showLogin = true;
   String? _userEmail;
-  String? _userName;
   String? _profileImagePath;
+  String? _userName;
 
   void _onLogin(String email, {String? name, String? imagePath}) {
     setState(() {
@@ -205,11 +206,11 @@ class _LoginPageState extends State<LoginPage> {
     setState(() => loading = false);
     if (response.statusCode == 200) {
       final data = jsonDecode(response.body);
-      widget.onLogin?.call(emailController.text, name: data['name'], imagePath: data['profileImage']);
+      widget.onLogin?.call(emailController.text, name: data['username'], imagePath: data['profileImage']);
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(
-          builder: (context) => MainScreen(userEmail: emailController.text, profileImagePath: data['profileImage'], userName: data['name']),
+          builder: (context) => MainScreen(userEmail: emailController.text, profileImagePath: data['profileImage'], userName: data['username'], themeMode: ThemeMode.system),
         ),
       );
     } else {
@@ -304,6 +305,7 @@ class RegisterPage extends StatefulWidget {
 class _RegisterPageState extends State<RegisterPage> {
   final TextEditingController emailController = TextEditingController();
   final TextEditingController passwordController = TextEditingController();
+  final TextEditingController nameController = TextEditingController();
   String error = '';
   String success = '';
   bool loading = false;
@@ -316,14 +318,41 @@ class _RegisterPageState extends State<RegisterPage> {
       body: jsonEncode({
         'email': emailController.text,
         'password': passwordController.text,
+        'username': nameController.text,
       }),
     );
     setState(() => loading = false);
     if (response.statusCode == 200) {
-      setState(() {
-        success = 'Registro exitoso. Ahora puedes iniciar sesión.';
-        error = '';
-      });
+      // Registro exitoso, ahora login automático
+      final loginResponse = await http.post(
+        Uri.parse('http://localhost:3000/login'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'email': emailController.text,
+          'password': passwordController.text,
+        }),
+      );
+      if (loginResponse.statusCode == 200) {
+        final data = jsonDecode(loginResponse.body);
+        if (context.mounted) {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (context) => MainScreen(
+                userEmail: emailController.text,
+                profileImagePath: data['profileImage'],
+                userName: data['username'],
+                themeMode: ThemeMode.system,
+              ),
+            ),
+          );
+        }
+      } else {
+        setState(() {
+          error = 'Registro exitoso, pero error al iniciar sesión.';
+          success = '';
+        });
+      }
     } else {
       setState(() {
         error = jsonDecode(response.body)['message'];
@@ -362,6 +391,14 @@ class _RegisterPageState extends State<RegisterPage> {
                         fontWeight: FontWeight.bold,
                         color: Colors.red[800])),
                 const SizedBox(height: 32),
+                TextField(
+                  controller: nameController,
+                  decoration: const InputDecoration(
+                    labelText: 'Nombre de usuario',
+                    prefixIcon: Icon(Icons.person),
+                  ),
+                ),
+                const SizedBox(height: 16),
                 TextField(
                   controller: emailController,
                   decoration: const InputDecoration(
@@ -418,43 +455,40 @@ class MainScreen extends StatefulWidget {
   final String? userName;
   final ValueChanged<ThemeMode?>? onThemeChange;
   final void Function(String?)? onProfileImageChange;
-  const MainScreen({super.key, required this.userEmail, this.profileImagePath, this.userName, this.onThemeChange, this.onProfileImageChange});
+  final ThemeMode themeMode;
+  const MainScreen({super.key, required this.userEmail, this.profileImagePath, this.userName, this.onThemeChange, this.onProfileImageChange, required this.themeMode});
   @override
   State<MainScreen> createState() => _MainScreenState();
 }
 
 class _MainScreenState extends State<MainScreen> {
   int _selectedIndex = 0;
-  late final List<Widget> _pages;
+  String? userRole;
 
   @override
   void initState() {
     super.initState();
-    _pages = [
-      HomePage(
-        userEmail: widget.userEmail,
-        userName: widget.userName,
-        profileImagePath: widget.profileImagePath,
-        onProfileTap: _showProfileMenu,
-        onSectionTap: (index) {
-          setState(() {
-            _selectedIndex = index;
-          });
-        },
-      ),
-      RoutinePage(userEmail: widget.userEmail),
-      ProgressPage(userEmail: widget.userEmail),
-      ProfileSettingsPage(
-        userEmail: widget.userEmail,
-        userName: widget.userName,
-        profileImagePath: widget.profileImagePath,
-        onThemeChange: widget.onThemeChange,
-        onProfileImageChange: widget.onProfileImageChange,
-      ),
-    ];
+    fetchUserRole();
   }
 
-  void _showProfileMenu() {
+  Future<void> fetchUserRole() async {
+    final res = await http.get(Uri.parse('http://localhost:3000/user/${widget.userEmail}'));
+    print('Respuesta backend rol: ${res.body}');
+    if (res.statusCode == 200) {
+      final data = jsonDecode(res.body);
+      print('Valor recibido de role: ${data['role']}');
+      setState(() {
+        userRole = data['role'] ?? 'user';
+      });
+    } else {
+      print('Error al obtener el rol: ${res.statusCode}');
+    }
+  }
+
+  void _showProfileMenu() async {
+    await fetchUserRole(); // Espera a que el rol esté actualizado antes de mostrar el menú
+    // Espera un frame para asegurar que setState termine
+    if (!mounted) return;
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
@@ -483,6 +517,46 @@ class _MainScreenState extends State<MainScreen> {
                 setState(() => _selectedIndex = 3);
               },
             ),
+            if (userRole == 'admin')
+              ListTile(
+                leading: const Icon(Icons.admin_panel_settings, color: Colors.red),
+                title: const Text('Panel de administración'),
+                onTap: () {
+                  Navigator.pop(context);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => AdminPanel(userEmail: widget.userEmail),
+                    ),
+                  );
+                },
+              ),
+            ListTile(
+              leading: const Icon(Icons.logout, color: Colors.grey),
+              title: const Text('Cerrar sesión'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.of(context, rootNavigator: true).pushAndRemoveUntil(
+                  MaterialPageRoute(builder: (_) => AuthScreen(
+                    onLogin: (String email, String? name, String? imagePath) {},
+                    builder: (context, userEmail) => MainScreen(
+                      userEmail: userEmail,
+                      profileImagePath: null,
+                      userName: null,
+                      onThemeChange: null,
+                      onProfileImageChange: null,
+                      themeMode: ThemeMode.system,
+                    ),
+                  )),
+                  (route) => false,
+                );
+              },
+            ),
+            // Línea de depuración para mostrar el rol actual
+            Padding(
+              padding: const EdgeInsets.only(top: 8.0),
+              child: Text('Rol: ${userRole ?? "cargando..."}', style: const TextStyle(fontSize: 14, color: Colors.red)),
+            ),
           ],
         ),
       ),
@@ -491,9 +565,33 @@ class _MainScreenState extends State<MainScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final pages = [
+      HomePage(
+        userEmail: widget.userEmail,
+        userName: widget.userName,
+        profileImagePath: widget.profileImagePath,
+        onProfileTap: _showProfileMenu,
+        onSectionTap: (index) {
+          setState(() {
+            _selectedIndex = index;
+          });
+        },
+      ),
+      RoutinePage(userEmail: widget.userEmail),
+      ProgressPage(userEmail: widget.userEmail),
+      ProfileSettingsPage(
+        userEmail: widget.userEmail,
+        userName: widget.userName,
+        profileImagePath: widget.profileImagePath,
+        onThemeChange: widget.onThemeChange,
+        onProfileImageChange: widget.onProfileImageChange,
+        userRole: userRole,
+        themeMode: widget.themeMode,
+      ),
+    ];
     return Scaffold(
       extendBodyBehindAppBar: true,
-      body: _pages[_selectedIndex],
+      body: pages[_selectedIndex],
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _selectedIndex,
         onTap: (index) => setState(() => _selectedIndex = index),
@@ -531,7 +629,7 @@ class HomePage extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const SizedBox(height: 56),
-                Text('¡Hola!', style: TextStyle(fontSize: 24, color: Colors.grey[700])),
+                Text('¡Hola, $userName!', style: TextStyle(fontSize: 24, color: Colors.grey[700])),
                 const SizedBox(height: 4),
                 Text(userName ?? userEmail, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 32),
@@ -585,6 +683,219 @@ class HomePage extends StatelessWidget {
             ],
           ),
         ),
+      ],
+    );
+  }
+}
+
+// --- SLIDER DE RUTINA ASIGNADA EN HOME Y SELECCIÓN DE RUTINA PREDETERMINADA ---
+class AssignedRoutineSlider extends StatefulWidget {
+  final String userEmail;
+  const AssignedRoutineSlider({super.key, required this.userEmail});
+  @override
+  State<AssignedRoutineSlider> createState() => _AssignedRoutineSliderState();
+}
+
+class _AssignedRoutineSliderState extends State<AssignedRoutineSlider> {
+  Map? assignedRoutine;
+  List defaultRoutines = [];
+  List userRoutines = [];
+  bool loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    fetchAssignedRoutine();
+    fetchDefaultRoutines();
+    fetchUserRoutines();
+  }
+
+  Future<void> fetchAssignedRoutine() async {
+    final res = await http.get(Uri.parse('http://localhost:3000/user/${widget.userEmail}/assigned-routine'));
+    if (res.statusCode == 200) {
+      setState(() {
+        assignedRoutine = jsonDecode(res.body);
+        loading = false;
+      });
+    }
+  }
+
+  Future<void> fetchDefaultRoutines() async {
+    final res = await http.get(Uri.parse('http://localhost:3000/default-routines'));
+    if (res.statusCode == 200) {
+      setState(() {
+        defaultRoutines = jsonDecode(res.body);
+      });
+    }
+  }
+
+  Future<void> fetchUserRoutines() async {
+    final res = await http.get(Uri.parse('http://localhost:3000/routines/${widget.userEmail}'));
+    if (res.statusCode == 200) {
+      setState(() {
+        userRoutines = jsonDecode(res.body);
+      });
+    }
+  }
+
+  Future<void> assignRoutine(int routineId, {bool isDefault = false}) async {
+    if (isDefault) {
+      await http.post(
+        Uri.parse('http://localhost:3000/assign-default-routine'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'user_email': widget.userEmail,
+          'routine_id': routineId,
+        }),
+      );
+    } else {
+      // Asignar rutina propia: puedes usar el mismo endpoint o uno específico si tienes
+      await http.post(
+        Uri.parse('http://localhost:3000/assign-user-routine'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'user_email': widget.userEmail,
+          'routine_id': routineId,
+        }),
+      );
+    }
+    fetchAssignedRoutine();
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Rutina asignada')));
+  }
+
+  void showRoutineSelector() {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (context) => SizedBox(
+        height: 500,
+        child: Column(
+          children: [
+            const SizedBox(height: 16),
+            const Text('Elige tu rutina activa', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+            const SizedBox(height: 16),
+            Expanded(
+              child: ListView(
+                children: [
+                  if (defaultRoutines.isNotEmpty) ...[
+                    const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      child: Text('Rutinas predeterminadas', style: TextStyle(fontWeight: FontWeight.bold)),
+                    ),
+                    ...defaultRoutines.map<Widget>((r) => ListTile(
+                          leading: r['image_url'] != null && r['image_url'].toString().isNotEmpty
+                              ? Image.network('http://localhost:3000/${r['image_url']}', width: 48, height: 48, fit: BoxFit.cover)
+                              : const Icon(Icons.star, color: Color(0xFFD32F2F)),
+                          title: Text(r['name']),
+                          trailing: assignedRoutine != null && assignedRoutine!['id'] == r['id'] ? const Icon(Icons.check, color: Colors.green) : null,
+                          onTap: () {
+                            Navigator.pop(context);
+                            assignRoutine(r['id'], isDefault: true);
+                          },
+                        )),
+                  ],
+                  if (userRoutines.isNotEmpty) ...[
+                    const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      child: Text('Tus rutinas personalizadas', style: TextStyle(fontWeight: FontWeight.bold)),
+                    ),
+                    ...userRoutines.map<Widget>((r) => ListTile(
+                          leading: const Icon(Icons.fitness_center, color: Color(0xFFD32F2F)),
+                          title: Text(r['name']),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (assignedRoutine != null && assignedRoutine!['id'] == r['id'])
+                                const Icon(Icons.check, color: Colors.green),
+                              IconButton(
+                                icon: const Icon(Icons.edit, color: Colors.grey),
+                                tooltip: 'Gestionar ejercicios',
+                                onPressed: () {
+                                  Navigator.pop(context);
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (context) => RoutineDetailPage(
+                                        routineId: r['id'],
+                                        routineName: r['name'],
+                                        userEmail: widget.userEmail,
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
+                            ],
+                          ),
+                          onTap: () {
+                            Navigator.pop(context);
+                            assignRoutine(r['id'], isDefault: false);
+                          },
+                        )),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (loading) return const Center(child: CircularProgressIndicator());
+    if (assignedRoutine == null) {
+      return Center(
+        child: ElevatedButton.icon(
+          icon: const Icon(Icons.add),
+          label: const Text('Elegir rutina'),
+          onPressed: showRoutineSelector,
+        ),
+      );
+    }
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        if (assignedRoutine!['image_url'] != null && assignedRoutine!['image_url'].toString().isNotEmpty)
+          ClipRRect(
+            borderRadius: BorderRadius.circular(24),
+            child: Image.network('http://localhost:3000/${assignedRoutine!['image_url']}', width: 220, height: 220, fit: BoxFit.cover),
+          )
+        else
+          const Icon(Icons.fitness_center, size: 180, color: Color(0xFFD32F2F)),
+        const SizedBox(height: 24),
+        Text(
+          assignedRoutine!['name'] ?? '',
+          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 28),
+          textAlign: TextAlign.center,
+        ),
+        const SizedBox(height: 16),
+        ElevatedButton.icon(
+          icon: const Icon(Icons.swap_horiz),
+          label: const Text('Cambiar rutina'),
+          onPressed: showRoutineSelector,
+        ),
+        if (userRoutines.any((r) => assignedRoutine!['id'] == r['id']))
+          Padding(
+            padding: const EdgeInsets.only(top: 12.0),
+            child: ElevatedButton.icon(
+              icon: const Icon(Icons.edit),
+              label: const Text('Gestionar ejercicios'),
+              onPressed: () {
+                final r = userRoutines.firstWhere((r) => assignedRoutine!['id'] == r['id']);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => RoutineDetailPage(
+                      routineId: r['id'],
+                      routineName: r['name'],
+                      userEmail: widget.userEmail,
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
       ],
     );
   }
@@ -681,7 +992,9 @@ class ProfileSettingsPage extends StatelessWidget {
   final String? profileImagePath;
   final ValueChanged<ThemeMode?>? onThemeChange;
   final void Function(String?)? onProfileImageChange;
-  const ProfileSettingsPage({super.key, this.userEmail, this.userName, this.profileImagePath, this.onThemeChange, this.onProfileImageChange});
+  final String? userRole;
+  final ThemeMode themeMode;
+  const ProfileSettingsPage({super.key, this.userEmail, this.userName, this.profileImagePath, this.onThemeChange, this.onProfileImageChange, this.userRole, required this.themeMode});
 
   Future<void> _pickImage(BuildContext context) async {
     final picker = ImagePicker();
@@ -717,7 +1030,7 @@ class ProfileSettingsPage extends StatelessWidget {
               leading: const Icon(Icons.brightness_6),
               title: const Text('Tema'),
               trailing: DropdownButton<ThemeMode>(
-                value: Theme.of(context).brightness == Brightness.dark ? ThemeMode.dark : ThemeMode.light,
+                value: themeMode,
                 items: const [
                   DropdownMenuItem(value: ThemeMode.system, child: Text('Automático')),
                   DropdownMenuItem(value: ThemeMode.light, child: Text('Claro')),
@@ -731,6 +1044,20 @@ class ProfileSettingsPage extends StatelessWidget {
               title: const Text('Cambiar imagen de perfil'),
               onTap: () => _pickImage(context),
             ),
+            if (userRole == 'admin')
+              ListTile(
+                leading: const Icon(Icons.admin_panel_settings, color: Colors.red),
+                title: const Text('Panel de administración'),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => AdminPanel(userEmail: userEmail ?? ''),
+                    ),
+                  );
+                },
+              ),
+            Text('Rol: ${userRole ?? "cargando..."}', style: const TextStyle(fontSize: 14, color: Colors.red)),
             // ...otros ajustes...
           ],
         ),
@@ -886,30 +1213,15 @@ class RoutineDetailPage extends StatefulWidget {
 class _RoutineDetailPageState extends State<RoutineDetailPage> {
   final TextEditingController exerciseController = TextEditingController();
   List<Map<String, dynamic>> exercises = [];
-  Map<String, String> exerciseImages = {
-    'Press Banca': 'assets/press_banca.png',
-    'Sentadilla': 'assets/sentadilla.png',
-    'Peso Muerto': 'assets/peso_muerto.png',
-    'Dominadas': 'assets/dominadas.png',
-    'Curl Bíceps': 'assets/curl_biceps.png',
-    'Press Militar': 'assets/press_militar.png',
-    'Remo': 'assets/remo.png',
-    // ...agrega más ejercicios e imágenes aquí...
-  };
-  List<String> popularExercises = [
-    'Press Banca',
-    'Sentadilla',
-    'Peso Muerto',
-    'Dominadas',
-    'Curl Bíceps',
-    'Press Militar',
-    'Remo',
-  ];
+  List<Map<String, dynamic>> allExercises = [];
+  int? selectedSets;
+  int? selectedReps;
 
   @override
   void initState() {
     super.initState();
     fetchExercises();
+    fetchAllExercisesFromDB();
   }
 
   Future<void> fetchExercises() async {
@@ -919,26 +1231,44 @@ class _RoutineDetailPageState extends State<RoutineDetailPage> {
       setState(() {
         exercises = data.map((e) => {
           'id': e['id'],
-          'name': e['name'],
-          'maxWeight': e['max_weight'],
+          'exercise_id': e['exercise_id'],
+          'name': e['exercise_name'] ?? e['name'],
+          'sets': e['sets'],
+          'reps': e['reps'],
+          'image_url': e['image_url'],
+          'description': e['description'],
         }).toList();
       });
     }
   }
 
-  Future<void> addExercise(String name) async {
-    if (name.isNotEmpty) {
-      final response = await http.post(
-        Uri.parse('http://localhost:3000/routine/${widget.routineId}/exercise'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'name': name,
-          'maxWeight': 0, // Siempre enviar 0
-        }),
-      );
-      if (response.statusCode == 200) {
-        fetchExercises();
-      }
+  Future<void> fetchAllExercisesFromDB() async {
+    final response = await http.get(Uri.parse('http://localhost:3000/exercises'));
+    if (response.statusCode == 200) {
+      final List<dynamic> data = jsonDecode(response.body);
+      setState(() {
+        allExercises = data.map((e) => {
+          'id': e['id'],
+          'name': e['name'],
+          'image_url': e['image_url'],
+          'description': e['description'],
+        }).toList();
+      });
+    }
+  }
+
+  Future<void> addExercise(int exerciseId, int sets, int reps) async {
+    final response = await http.post(
+      Uri.parse('http://localhost:3000/routine/${widget.routineId}/exercise'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'exercise_id': exerciseId,
+        'sets': sets,
+        'reps': reps,
+      }),
+    );
+    if (response.statusCode == 200) {
+      fetchExercises();
     }
   }
 
@@ -951,7 +1281,7 @@ class _RoutineDetailPageState extends State<RoutineDetailPage> {
         backgroundColor: Theme.of(context).brightness == Brightness.dark ? Colors.grey[900] : Colors.white,
         child: Container(
           width: 380,
-          constraints: const BoxConstraints(maxHeight: 480),
+          constraints: const BoxConstraints(maxHeight: 520),
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -960,17 +1290,68 @@ class _RoutineDetailPageState extends State<RoutineDetailPage> {
               const Text('Selecciona un ejercicio', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
               const SizedBox(height: 16),
               SizedBox(
-                height: 300,
+                height: 220,
                 child: GridView.count(
                   crossAxisCount: 3,
                   childAspectRatio: 0.85,
                   mainAxisSpacing: 12,
                   crossAxisSpacing: 12,
                   children: [
-                    ...popularExercises.map((exName) => GestureDetector(
+                    ...allExercises.map((ex) => GestureDetector(
                       onTap: () {
-                        Navigator.pop(context);
-                        addExercise(exName);
+                        showDialog(
+                          context: context,
+                          builder: (context) {
+                            int sets = 3;
+                            int reps = 10;
+                            return AlertDialog(
+                              title: Text('Agregar ${ex['name']}'),
+                              content: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text('¿Cuántos sets y repeticiones?'),
+                                  Row(
+                                    children: [
+                                      const Text('Sets:'),
+                                      const SizedBox(width: 8),
+                                      DropdownButton<int>(
+                                        value: sets,
+                                        items: List.generate(10, (i) => i + 1).map((v) => DropdownMenuItem(value: v, child: Text('$v'))).toList(),
+                                        onChanged: (v) {
+                                          if (v != null) sets = v;
+                                        },
+                                      ),
+                                      const SizedBox(width: 16),
+                                      const Text('Reps:'),
+                                      const SizedBox(width: 8),
+                                      DropdownButton<int>(
+                                        value: reps,
+                                        items: List.generate(30, (i) => i + 1).map((v) => DropdownMenuItem(value: v, child: Text('$v'))).toList(),
+                                        onChanged: (v) {
+                                          if (v != null) reps = v;
+                                        },
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                              actions: [
+                                TextButton(
+                                  onPressed: () => Navigator.pop(context),
+                                  child: const Text('Cancelar'),
+                                ),
+                                ElevatedButton(
+                                  onPressed: () {
+                                    Navigator.pop(context);
+                                    Navigator.pop(context);
+                                    addExercise(ex['id'], sets, reps);
+                                  },
+                                  child: const Text('Agregar'),
+                                ),
+                              ],
+                            );
+                          },
+                        );
                       },
                       child: Column(
                         children: [
@@ -980,15 +1361,12 @@ class _RoutineDetailPageState extends State<RoutineDetailPage> {
                               color: Colors.grey[200],
                             ),
                             padding: const EdgeInsets.all(8),
-                            child: Image.asset(
-                              exerciseImages[exName] ?? 'assets/default.png',
-                              width: 56,
-                              height: 56,
-                              fit: BoxFit.cover,
-                            ),
+                            child: ex['image_url'] != null && ex['image_url'].toString().isNotEmpty
+                              ? Image.network('http://localhost:3000/${ex['image_url']}', width: 56, height: 56, fit: BoxFit.cover)
+                              : const Icon(Icons.fitness_center, size: 56, color: Color(0xFFD32F2F)),
                           ),
                           const SizedBox(height: 4),
-                          Text(exName, textAlign: TextAlign.center, style: const TextStyle(fontSize: 13)),
+                          Text(ex['name'], textAlign: TextAlign.center, style: const TextStyle(fontSize: 13)),
                         ],
                       ),
                     )),
@@ -1015,8 +1393,9 @@ class _RoutineDetailPageState extends State<RoutineDetailPage> {
                                   if (name.isNotEmpty) {
                                     Navigator.pop(context);
                                     Navigator.pop(context);
-                                    addExercise(name);
-                                    exerciseController.clear();
+                                    // Aquí podrías crear el ejercicio personalizado en la base de datos y luego agregarlo
+                                    // Por simplicidad, solo lo agregamos con sets/reps por defecto
+                                    // Deberías implementar la lógica para crear el ejercicio y luego obtener su id
                                   }
                                 },
                                 child: const Text('Agregar'),
@@ -1063,9 +1442,9 @@ class _RoutineDetailPageState extends State<RoutineDetailPage> {
       context,
       MaterialPageRoute(
         builder: (context) => ExerciseDetailPage(
-          exerciseId: exercise['id'],
+          exerciseId: exercise['exercise_id'] ?? exercise['id'],
           exerciseName: exercise['name'],
-          imagePath: exerciseImages[exercise['name']],
+          imagePath: exercise['image_url'],
         ),
       ),
     );
@@ -1094,7 +1473,6 @@ class _RoutineDetailPageState extends State<RoutineDetailPage> {
                 itemCount: exercises.length,
                 itemBuilder: (context, index) {
                   final ex = exercises[index];
-                  final imagePath = exerciseImages[ex['name']];
                   return GestureDetector(
                     onTap: () => goToExerciseDetail(ex),
                     child: Card(
@@ -1103,10 +1481,10 @@ class _RoutineDetailPageState extends State<RoutineDetailPage> {
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          if (imagePath != null)
+                          if (ex['image_url'] != null && ex['image_url'].toString().isNotEmpty)
                             ClipRRect(
                               borderRadius: BorderRadius.circular(12),
-                              child: Image.asset(imagePath, width: 70, height: 70, fit: BoxFit.cover),
+                              child: Image.network('http://localhost:3000/${ex['image_url']}', width: 70, height: 70, fit: BoxFit.cover),
                             )
                           else
                             const Icon(Icons.fitness_center, size: 60, color: Color(0xFFD32F2F)),
@@ -1116,6 +1494,8 @@ class _RoutineDetailPageState extends State<RoutineDetailPage> {
                             style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                             textAlign: TextAlign.center,
                           ),
+                          if (ex['sets'] != null && ex['reps'] != null)
+                            Text('${ex['sets']} x ${ex['reps']}', style: const TextStyle(fontSize: 13, color: Colors.grey)),
                         ],
                       ),
                     ),
@@ -1248,15 +1628,7 @@ class _ExerciseDetailPageState extends State<ExerciseDetailPage> {
                                 isCurved: true,
                                 color: const Color(0xFFD32F2F),
                                 barWidth: 4,
-                                dotData: FlDotData(
-                                  show: true,
-                                  getDotPainter: (spot, percent, bar, index) => FlDotCirclePainter(
-                                    radius: 5,
-                                    color: Colors.white,
-                                    strokeWidth: 3,
-                                    strokeColor: const Color(0xFFD32F2F),
-                                  ),
-                                ),
+                                dotData: FlDotData(show: true),
                                 belowBarData: BarAreaData(show: true, color: const Color(0x33D32F2F)),
                               ),
                             ],
@@ -1265,21 +1637,7 @@ class _ExerciseDetailPageState extends State<ExerciseDetailPage> {
                                 sideTitles: SideTitles(showTitles: true, reservedSize: 32),
                               ),
                               bottomTitles: AxisTitles(
-                                sideTitles: SideTitles(
-                                  showTitles: true,
-                                  reservedSize: 32,
-                                  interval: (history.length > 1) ? ((history.length - 1) / 3).clamp(1, 100).toDouble() : 1,
-                                  getTitlesWidget: (value, meta) {
-                                    int idx = value.toInt();
-                                    if (idx >= 0 && idx < history.length) {
-                                      // Solo muestra 3-5 fechas máximo
-                                      if (history.length <= 5 || idx == 0 || idx == history.length - 1 || idx == (history.length ~/ 2)) {
-                                        return Text(formatDate(history[idx]['date']), style: const TextStyle(fontSize: 12));
-                                      }
-                                    }
-                                    return const SizedBox.shrink();
-                                  },
-                                ),
+                                sideTitles: SideTitles(showTitles: true),
                               ),
                               topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
                               rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
@@ -1293,5 +1651,468 @@ class _ExerciseDetailPageState extends State<ExerciseDetailPage> {
         ),
       ),
     );
+  }
+}
+
+// --- Panel de Administración Completo ---
+class AdminPanel extends StatefulWidget {
+  final String userEmail;
+  const AdminPanel({super.key, required this.userEmail});
+  @override
+  State<AdminPanel> createState() => _AdminPanelState();
+}
+
+class _AdminPanelState extends State<AdminPanel> {
+  int _selectedIndex = 0;
+  late final List<Widget> _pages;
+  static const List<String> _titles = [
+    'Usuarios',
+    'Rutinas',
+    'Rutinas Predeterminadas',
+    'Ejercicios',
+    'Asignar Rutina',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _pages = [
+      AdminUsersPage(),
+      AdminRoutinesPage(),
+      AdminDefaultRoutinesPage(),
+      AdminExercisesPage(userEmail: widget.userEmail),
+      AdminAssignRoutinePage(),
+    ];
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('Panel de Administración - ${_titles[_selectedIndex]}')),
+      body: _pages[_selectedIndex],
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _selectedIndex,
+        onTap: (index) => setState(() => _selectedIndex = index),
+        selectedItemColor: const Color(0xFFD32F2F),
+        unselectedItemColor: Colors.grey,
+        items: const [
+          BottomNavigationBarItem(icon: Icon(Icons.person), label: 'Usuarios'),
+          BottomNavigationBarItem(icon: Icon(Icons.fitness_center), label: 'Rutinas'),
+          BottomNavigationBarItem(icon: Icon(Icons.star), label: 'Predet.'),
+          BottomNavigationBarItem(icon: Icon(Icons.list), label: 'Ejercicios'),
+          BottomNavigationBarItem(icon: Icon(Icons.assignment), label: 'Asignar'),
+        ],
+      ),
+    );
+  }
+}
+
+// --- Sección: Gestión de Usuarios ---
+class AdminUsersPage extends StatefulWidget {
+  const AdminUsersPage({super.key});
+
+  @override
+  State<AdminUsersPage> createState() => _AdminUsersPageState();
+}
+class _AdminUsersPageState extends State<AdminUsersPage> {
+  List users = [];
+  bool loading = true;
+  final TextEditingController emailController = TextEditingController();
+  final TextEditingController usernameController = TextEditingController();
+  final TextEditingController passwordController = TextEditingController();
+  String role = 'user';
+  int? editingId;
+  @override
+  void initState() { super.initState(); fetchUsers(); }
+  Future<void> fetchUsers() async {
+    setState(() => loading = true);
+    final res = await http.get(Uri.parse('http://localhost:3000/admin/users'));
+    if (res.statusCode == 200) {
+      setState(() { users = jsonDecode(res.body); loading = false; });
+    }
+  }
+  Future<void> saveUser() async {
+    final email = emailController.text.trim();
+    final username = usernameController.text.trim();
+    final password = passwordController.text.trim();
+    if (editingId == null) {
+      await http.post(Uri.parse('http://localhost:3000/admin/users'), headers: {'Content-Type': 'application/json'}, body: jsonEncode({'email': email, 'username': username, 'password': password, 'role': role,}),);
+    } else {
+      await http.put(Uri.parse('http://localhost:3000/admin/users/$editingId'), headers: {'Content-Type': 'application/json'}, body: jsonEncode({'username': username, 'role': role,}),);
+    }
+    emailController.clear(); usernameController.clear(); passwordController.clear(); editingId = null; fetchUsers();
+  }
+  Future<void> deleteUser(int id) async { await http.delete(Uri.parse('http://localhost:3000/admin/users/$id')); fetchUsers(); }
+  void showEdit(Map user) { setState(() { editingId = user['id']; emailController.text = user['email']; usernameController.text = user['username']; role = user['role']; }); }
+  @override
+  Widget build(BuildContext context) {
+    return loading ? const Center(child: CircularProgressIndicator()) : ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        for (final user in users)
+          Card(
+            child: ListTile(
+              leading: user['profile_image'] != null ? Image.network('http://localhost:3000/${user['profile_image']}', width: 40, height: 40, fit: BoxFit.cover) : const Icon(Icons.person, size: 32),
+              title: Text(user['username'] ?? ''),
+              subtitle: Text('${user['email']}\nRol: ${user['role']}'),
+              isThreeLine: true,
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(icon: const Icon(Icons.edit), onPressed: () => showEdit(user)),
+                  IconButton(icon: const Icon(Icons.delete), onPressed: () => deleteUser(user['id'])),
+                ],
+              ),
+            ),
+          ),
+        const Divider(),
+        Text(editingId == null ? 'Nuevo usuario' : 'Editar usuario', style: const TextStyle(fontWeight: FontWeight.bold)),
+        TextField(controller: emailController, decoration: const InputDecoration(labelText: 'Email')),
+        TextField(controller: usernameController, decoration: const InputDecoration(labelText: 'Nombre de usuario')),
+        if (editingId == null) TextField(controller: passwordController, decoration: const InputDecoration(labelText: 'Contraseña'), obscureText: true),
+        DropdownButton<String>(value: role, items: const [DropdownMenuItem(value: 'user', child: Text('Usuario')), DropdownMenuItem(value: 'admin', child: Text('Admin'))], onChanged: (v) => setState(() => role = v ?? 'user'),),
+        ElevatedButton(onPressed: saveUser, child: Text(editingId == null ? 'Crear' : 'Actualizar')),
+        if (editingId != null) TextButton(onPressed: () { setState(() { editingId = null; emailController.clear(); usernameController.clear(); passwordController.clear(); role = 'user'; }); }, child: const Text('Cancelar')),
+      ],
+    );
+  }
+}
+
+// --- Sección: Gestión de Rutinas (solo visualización de predeterminadas) ---
+class AdminRoutinesPage extends StatefulWidget {
+  const AdminRoutinesPage({super.key});
+
+  @override
+  State<AdminRoutinesPage> createState() => _AdminRoutinesPageState();
+}
+class _AdminRoutinesPageState extends State<AdminRoutinesPage> {
+  List routines = [];
+  bool loading = true;
+  @override
+  void initState() { super.initState(); fetchRoutines(); }
+  Future<void> fetchRoutines() async {
+    setState(() => loading = true);
+    final res = await http.get(Uri.parse('http://localhost:3000/admin/default-routines'));
+    if (res.statusCode == 200) {
+      setState(() { routines = jsonDecode(res.body); loading = false; });
+    }
+  }
+  @override
+  Widget build(BuildContext context) {
+    return loading ? const Center(child: CircularProgressIndicator()) : ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        for (final routine in routines)
+          Card(
+            child: ListTile(
+              leading: routine['image_url'] != null && routine['image_url'].toString().isNotEmpty ? Image.network('http://localhost:3000/${routine['image_url']}', width: 48, height: 48, fit: BoxFit.cover) : const Icon(Icons.star, color: Color(0xFFD32F2F)),
+              title: Text(routine['name']),
+              subtitle: const Text('Rutina predeterminada'),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+// --- Sección: Gestión de Rutinas Predeterminadas (CRUD) ---
+class AdminDefaultRoutinesPage extends StatefulWidget {
+  const AdminDefaultRoutinesPage({super.key});
+
+  @override
+  State<AdminDefaultRoutinesPage> createState() => _AdminDefaultRoutinesPageState();
+}
+class _AdminDefaultRoutinesPageState extends State<AdminDefaultRoutinesPage> {
+  List routines = [];
+  bool loading = true;
+  final TextEditingController nameController = TextEditingController();
+  List exercises = [];
+  List selectedExercises = [];
+  @override
+  void initState() { super.initState(); fetchRoutines(); fetchExercises(); }
+  Future<void> fetchRoutines() async {
+    setState(() => loading = true);
+    final res = await http.get(Uri.parse('http://localhost:3000/admin/default-routines'));
+    if (res.statusCode == 200) {
+      setState(() { routines = jsonDecode(res.body); loading = false; });
+    }
+  }
+  Future<void> fetchExercises() async {
+    final res = await http.get(Uri.parse('http://localhost:3000/exercises'));
+    if (res.statusCode == 200) {
+      setState(() { exercises = jsonDecode(res.body); });
+    }
+  }
+  Future<void> saveRoutine() async {
+    final name = nameController.text.trim();
+    if (name.isEmpty || selectedExercises.isEmpty) return;
+    await http.post(Uri.parse('http://localhost:3000/admin/default-routine'), headers: {'Content-Type': 'application/json'}, body: jsonEncode({'name': name, 'exercises': selectedExercises}),);
+    nameController.clear(); selectedExercises = []; fetchRoutines();
+  }
+  @override
+  Widget build(BuildContext context) {
+    return loading ? const Center(child: CircularProgressIndicator()) : ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        for (final routine in routines)
+          Card(
+            child: ListTile(
+              title: Text(routine['name']),
+              subtitle: const Text('Rutina predeterminada'),
+            ),
+          ),
+        const Divider(),
+        const Text('Nueva rutina predeterminada', style: TextStyle(fontWeight: FontWeight.bold)),
+        TextField(controller: nameController, decoration: const InputDecoration(labelText: 'Nombre')),
+        const SizedBox(height: 8),
+        const Text('Selecciona ejercicios:'),
+        Wrap(
+          children: [
+            for (final ex in exercises)
+              FilterChip(
+                label: Text(ex['name']),
+                selected: selectedExercises.any((e) => e['exercise_id'] == ex['id']),
+                onSelected: (v) {
+                  setState(() {
+                    if (v) {
+                      selectedExercises.add({'exercise_id': ex['id'], 'sets': 3, 'reps': 10});
+                    } else {
+                      selectedExercises.removeWhere((e) => e['exercise_id'] == ex['id']);
+                    }
+                  });
+                },
+              ),
+          ],
+        ),
+        ElevatedButton(onPressed: saveRoutine, child: const Text('Crear rutina predeterminada')),
+      ],
+    );
+  }
+}
+
+// --- Sección: Asignar Rutinas Predeterminadas ---
+class AdminAssignRoutinePage extends StatefulWidget {
+  const AdminAssignRoutinePage({super.key});
+
+  @override
+  State<AdminAssignRoutinePage> createState() => _AdminAssignRoutinePageState();
+}
+class _AdminAssignRoutinePageState extends State<AdminAssignRoutinePage> {
+  List users = [];
+  List routines = [];
+  bool loading = true;
+  int? selectedUserId;
+  int? selectedRoutineId;
+  @override
+  void initState() { super.initState(); fetchData(); }
+  Future<void> fetchData() async {
+    setState(() => loading = true);
+    final usersRes = await http.get(Uri.parse('http://localhost:3000/admin/users'));
+    final routinesRes = await http.get(Uri.parse('http://localhost:3000/admin/default-routines'));
+    if (usersRes.statusCode == 200 && routinesRes.statusCode == 200) {
+      setState(() {
+        users = jsonDecode(usersRes.body);
+        routines = jsonDecode(routinesRes.body);
+        loading = false;
+      });
+    }
+  }
+  Future<void> assignRoutine() async {
+    if (selectedUserId == null || selectedRoutineId == null) return;
+    final user = users.firstWhere((u) => u['id'] == selectedUserId);
+    await http.post(Uri.parse('http://localhost:3000/admin/assign-default-routine'), headers: {'Content-Type': 'application/json'}, body: jsonEncode({'user_email': user['email'], 'routine_id': selectedRoutineId}),);
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Rutina asignada')));
+  }
+  @override
+  Widget build(BuildContext context) {
+    return loading ? const Center(child: CircularProgressIndicator()) : Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Selecciona usuario:'),
+          DropdownButton<int>(
+            value: selectedUserId,
+            items: users.map<DropdownMenuItem<int>>((u) => DropdownMenuItem(value: u['id'], child: Text(u['username'] ?? u['email']))).toList(),
+            onChanged: (v) => setState(() => selectedUserId = v),
+          ),
+          const SizedBox(height: 16),
+          const Text('Selecciona rutina predeterminada:'),
+          DropdownButton<int>(
+            value: selectedRoutineId,
+            items: routines.map<DropdownMenuItem<int>>((r) => DropdownMenuItem(value: r['id'], child: Text(r['name']))).toList(),
+            onChanged: (v) => setState(() => selectedRoutineId = v),
+          ),
+          const SizedBox(height: 24),
+          ElevatedButton(onPressed: assignRoutine, child: const Text('Asignar rutina')),
+        ],
+      ),
+    );
+  }
+}
+
+// --- Pantalla de gestión de ejercicios para admin ---
+class AdminExercisePanel extends StatefulWidget {
+  final String userEmail;
+  const AdminExercisePanel({super.key, required this.userEmail});
+  @override
+  State<AdminExercisePanel> createState() => _AdminExercisePanelState();
+}
+
+class _AdminExercisePanelState extends State<AdminExercisePanel> {
+  List<Map<String, dynamic>> exercises = [];
+  bool loading = true;
+  final TextEditingController nameController = TextEditingController();
+  final TextEditingController descController = TextEditingController();
+  int? editingId;
+  String? imagePath;
+
+  @override
+  void initState() {
+    super.initState();
+    fetchExercises();
+  }
+
+  Future<void> fetchExercises() async {
+    setState(() => loading = true);
+    final res = await http.get(Uri.parse('http://localhost:3000/exercises'));
+    if (res.statusCode == 200) {
+      final data = jsonDecode(res.body) as List;
+      setState(() {
+        exercises = data.map((e) => {
+          'id': e['id'],
+          'name': e['name'],
+          'image_url': e['image_url'],
+          'description': e['description'],
+        }).toList();
+        loading = false;
+      });
+    }
+  }
+
+  Future<void> saveExercise() async {
+    final name = nameController.text.trim();
+    final desc = descController.text.trim();
+    if (name.isEmpty) return;
+    if (editingId == null) {
+      // Crear
+      await http.post(
+        Uri.parse('http://localhost:3000/exercises'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'name': name,
+          'description': desc,
+          'image_url': null,
+          'email': widget.userEmail,
+        }),
+      );
+    } else {
+      // Editar
+      await http.put(
+        Uri.parse('http://localhost:3000/exercises/$editingId'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'name': name,
+          'description': desc,
+          'image_url': null,
+          'email': widget.userEmail,
+        }),
+      );
+    }
+    nameController.clear();
+    descController.clear();
+    editingId = null;
+    fetchExercises();
+  }
+
+  Future<void> deleteExercise(int id) async {
+    await http.delete(
+      Uri.parse('http://localhost:3000/exercises/$id'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'email': widget.userEmail}),
+    );
+    fetchExercises();
+  }
+
+  Future<void> pickAndUploadImage(int id) async {
+    final picker = ImagePicker();
+    final picked = await picker.pickImage(source: ImageSource.gallery);
+    if (picked != null) {
+      final req = http.MultipartRequest('POST', Uri.parse('http://localhost:3000/exercises/$id/image'));
+      req.files.add(await http.MultipartFile.fromPath('image', picked.path));
+      req.fields['email'] = widget.userEmail;
+      await req.send();
+      fetchExercises();
+    }
+  }
+
+  void showEdit(Map<String, dynamic> ex) {
+    setState(() {
+      editingId = ex['id'];
+      nameController.text = ex['name'];
+      descController.text = ex['description'] ?? '';
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Gestión de Ejercicios (Admin)')),
+      body: loading
+          ? const Center(child: CircularProgressIndicator())
+          : ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                for (final ex in exercises)
+                  Card(
+                    child: ListTile(
+                      leading: ex['image_url'] != null
+                          ? Image.network('http://localhost:3000/${ex['image_url']}', width: 48, height: 48, fit: BoxFit.cover)
+                          : const Icon(Icons.fitness_center, size: 40),
+                      title: Text(ex['name'], style: const TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: Text(ex['description'] ?? ''),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(icon: const Icon(Icons.edit), onPressed: () => showEdit(ex)),
+                          IconButton(icon: const Icon(Icons.image), onPressed: () => pickAndUploadImage(ex['id'])),
+                          IconButton(icon: const Icon(Icons.delete), onPressed: () => deleteExercise(ex['id'])),
+                        ],
+                      ),
+                    ),
+                  ),
+                const Divider(),
+                Text(editingId == null ? 'Nuevo ejercicio' : 'Editar ejercicio', style: const TextStyle(fontWeight: FontWeight.bold)),
+                TextField(controller: nameController, decoration: const InputDecoration(labelText: 'Nombre')),
+                TextField(controller: descController, decoration: const InputDecoration(labelText: 'Descripción')),
+                const SizedBox(height: 8),
+                ElevatedButton(
+                  onPressed: saveExercise,
+                  child: Text(editingId == null ? 'Crear' : 'Actualizar'),
+                ),
+                if (editingId != null)
+                  TextButton(
+                    onPressed: () {
+                      setState(() {
+                        editingId = null;
+                        nameController.clear();
+                        descController.clear();
+                      });
+                    },
+                    child: const Text('Cancelar'),
+                  ),
+              ],
+            ),
+    );
+  }
+}
+
+// --- Sección: Gestión de Ejercicios (reutiliza tu panel actual) ---
+class AdminExercisesPage extends StatelessWidget {
+  final String userEmail;
+  const AdminExercisesPage({super.key, required this.userEmail});
+  @override
+  Widget build(BuildContext context) {
+    return AdminExercisePanel(userEmail: userEmail);
   }
 }
